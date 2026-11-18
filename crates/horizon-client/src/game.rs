@@ -4929,6 +4929,16 @@ impl Game<'_> {
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false);
             self.draw_music_toast(&mut batch, false);
+            if self.main_menu_account_pill_active() {
+                let pname = self.options.player_name();
+                account_center::draw_on_main(
+                    &self.gui.atlas,
+                    &mut batch,
+                    self.cursor,
+                    &pname,
+                    &self.settings.language,
+                );
+            }
             return batch;
         }
         let atlas_ptr: *const HudAtlas = &self.gui.atlas;
@@ -9259,6 +9269,40 @@ impl Game<'_> {
         // carries text closes that screen or moves its focus. The title's
         // screens keep theirs while no box has focus: Space presses a button
         // there, and the box that opens must not take its character.
+        if self.main_menu_account_pill_active()
+            && !matches!(
+                &event,
+                WindowEvent::CloseRequested
+                    | WindowEvent::Focused(_)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::RedrawRequested
+                    | WindowEvent::ModifiersChanged(_)
+                    | WindowEvent::CursorMoved { .. }
+            )
+        {
+            let size = self
+                .renderer
+                .as_ref()
+                .map_or([1280, 720], |r| [r.config.width, r.config.height]);
+            let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+            let pname = self.options.player_name();
+            let (consumed, updated) = account_center::handle_main_menu_event(
+                &event,
+                &self.gui.atlas,
+                &batch,
+                self.cursor,
+                self.modifiers,
+                &self.clipboard,
+                &pname,
+                &self.settings.language,
+            );
+            if let Some(new_name) = updated {
+                self.apply_account_center_name(new_name);
+            }
+            if consumed {
+                return;
+            }
+        }
         let mut typed: Option<String> = None;
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
@@ -11318,7 +11362,15 @@ pub(crate) fn run_with(
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
             let settings = Settings::load(&Game::options_path());
-            return no_resources::show(&vanilla_root, &settings);
+            if let Some(imported_dir) = no_resources::show(&vanilla_root, &settings)? {
+                if let Ok(exe) = std::env::current_exe() {
+                    let mut cmd = std::process::Command::new(exe);
+                    cmd.args(std::env::args_os().skip(1));
+                    cmd.arg("--resources").arg(&imported_dir);
+                    let _ = cmd.spawn();
+                }
+            }
+            return Ok(());
         }
         return Err(error.into());
     }

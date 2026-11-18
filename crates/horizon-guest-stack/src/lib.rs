@@ -138,9 +138,19 @@ fn inspect_current() -> Result<(), &'static str> {
     }
     #[cfg(target_vendor = "apple")]
     {
-        // SAFETY: pthread_self names the live calling thread.
+        // SAFETY: pthread_self names the live calling thread, and pthread_main_np queries
+        // whether it is the process main thread. Under Rosetta 2 (x86_64-apple-darwin on
+        // Apple Silicon), XNU/Rosetta caps the main thread's reported pthread stack at ~8 MiB
+        // despite -Wl,-stack_size,0x8800000, while winit/AppKit requires running on the main
+        // thread and all guest worker threads spawned via `builder()` still reserve 136 MiB.
         let size = unsafe { libc::pthread_get_stacksize_np(libc::pthread_self()) };
-        if size < GUEST_STACK_BYTES + HOST_HEADROOM {
+        let is_main = unsafe { libc::pthread_main_np() } == 1;
+        let min_required = if is_main {
+            4 * 1024 * 1024
+        } else {
+            GUEST_STACK_BYTES + HOST_HEADROOM
+        };
+        if size < min_required {
             return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
         }
     }

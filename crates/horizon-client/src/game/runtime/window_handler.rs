@@ -310,6 +310,9 @@ impl Game<'_> {
             event_loop.exit();
             return;
         }
+        if let Some(new_name) = super::account_center::poll_updates(&self.clipboard) {
+            self.apply_account_center_name(new_name);
+        }
         horizon_client::spans::time("server_packs", || self.tick_server_packs());
         horizon_client::spans::time("control", || self.poll_control(event_loop));
         if self.pending_save.is_some() {

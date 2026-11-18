@@ -18,6 +18,10 @@ const BUTTON_GAP: f32 = 12.0;
 pub enum Action {
     /// Open the hook's page.
     Open(&'static str),
+    /// Import the auto-detected `.zip` from `~/Downloads` in one click.
+    ImportDetected,
+    /// Open a native file picker to choose a `.zip` resource archive.
+    PickZip,
     Quit,
 }
 
@@ -28,6 +32,8 @@ pub struct NoResources {
     buttons: Vec<(String, Action)>,
     /// Where the prepared files were looked for, for whoever starts the game by hand on purpose.
     looked_in: String,
+    progress: Option<(u8, String)>,
+    error_line: Option<String>,
 }
 
 impl NoResources {
@@ -62,7 +68,96 @@ impl NoResources {
             paragraphs,
             buttons,
             looked_in: lang::tr("horizon.no_resources.looked_in", &[&shown.display()]),
+            progress: None,
+            error_line: None,
         }
+    }
+
+    /// Interactive standalone setup screen allowing direct `.zip` archive import
+    /// (one-click from `~/Downloads`, file picker, or drag-and-drop onto the window).
+    pub fn new_interactive(
+        looked_in: &std::path::Path,
+        zh: bool,
+        detected_zip: Option<&std::path::Path>,
+    ) -> Self {
+        let shown = std::path::absolute(looked_in).unwrap_or_else(|_| looked_in.to_path_buf());
+        let mut buttons = Vec::new();
+        if let Some(zip_path) = detected_zip {
+            let name = zip_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "resources.zip".into());
+            let label = if zh {
+                format!("一键导入 Downloads/{name}")
+            } else {
+                format!("Import Downloads/{name}")
+            };
+            buttons.push((label, Action::ImportDetected));
+        }
+        buttons.push((
+            if zh {
+                "选择资源压缩包 (.zip)…".to_owned()
+            } else {
+                "Choose Resources (.zip)…".to_owned()
+            },
+            Action::PickZip,
+        ));
+        buttons.push((
+            if zh {
+                "退出".to_owned()
+            } else {
+                lang::get("horizon.no_resources.quit")
+            },
+            Action::Quit,
+        ));
+
+        let (title, paragraphs, looked_in_str) = if zh {
+            (
+                format!("导入 {} 游戏资源即可畅玩", horizon_core::VANILLA_VERSION),
+                vec![
+                    format!(
+                        "尚未检测到已准备的 Minecraft: Java Edition {} 资源包（如 horizon-{}-resources.zip）。",
+                        horizon_core::VANILLA_VERSION,
+                        horizon_core::VANILLA_VERSION
+                    ),
+                    "请点击下方按钮选择资源 .zip 压缩包，或直接将 .zip 压缩包拖入此窗口。解压完成后将自动进入离线模式主界面，后续启动秒进无需重复导入。".to_owned(),
+                ],
+                format!("资源存放目录: {}", shown.display()),
+            )
+        } else {
+            (
+                format!(
+                    "Import {} Resources to Play Offline",
+                    horizon_core::VANILLA_VERSION
+                ),
+                vec![
+                    format!(
+                        "Prepared Minecraft: Java Edition {} game files (e.g. horizon-{}-resources.zip) have not been imported yet.",
+                        horizon_core::VANILLA_VERSION,
+                        horizon_core::VANILLA_VERSION
+                    ),
+                    "Click below to choose a .zip archive, or drag and drop the .zip directly onto this window. Once extracted, Horizon will launch straight into Offline Mode.".to_owned(),
+                ],
+                lang::tr("horizon.no_resources.looked_in", &[&shown.display()]),
+            )
+        };
+
+        Self {
+            title,
+            paragraphs,
+            buttons,
+            looked_in: looked_in_str,
+            progress: None,
+            error_line: None,
+        }
+    }
+
+    pub fn set_progress(&mut self, progress: Option<(u8, String)>) {
+        self.progress = progress;
+    }
+
+    pub fn set_error(&mut self, error: Option<String>) {
+        self.error_line = error;
     }
 
     /// The buttons' labels, actions and rectangles in dp, and the paragraphs' wrapped
@@ -77,22 +172,35 @@ impl NoResources {
             .collect();
         let text_h = lines.iter().map(|l| l.len() as f32 * LINE).sum::<f32>()
             + (lines.len() - 1) as f32 * PARAGRAPH_GAP;
-        let height = TITLE_LINE + 16.0 + text_h + 28.0 + control() + 20.0 + SMALL_LINE;
-        let y = ((ui.h - height) / 2.0).max(24.0).round();
-        let buttons_y = y + TITLE_LINE + 16.0 + text_h + 28.0;
-        let mut buttons = Vec::new();
-        let mut bx = x;
+        let buttons_start_y = TITLE_LINE + 16.0 + text_h + 28.0;
+        let mut temp_buttons: Vec<(String, Action, f32, f32, f32)> = Vec::new();
+        let mut bx = 0.0f32;
+        let mut row_y = 0.0f32;
         for (label, action) in &self.buttons {
-            let w = (ui.measure(Face::Medium, button_text(), label) + 40.0).round();
-            buttons.push(Button {
-                label: label.clone(),
-                action: *action,
-                x: bx,
-                y: buttons_y,
-                w,
-            });
+            let w = (ui.measure(Face::Medium, button_text(), label) + 36.0)
+                .round()
+                .min(width);
+            if bx > 0.0 && bx + w > width {
+                bx = 0.0;
+                row_y += control() + BUTTON_GAP;
+            }
+            temp_buttons.push((label.clone(), *action, bx, row_y, w));
             bx += w + BUTTON_GAP;
         }
+        let buttons_total_h = row_y + control();
+        let height = buttons_start_y + buttons_total_h + 20.0 + SMALL_LINE;
+        let y = ((ui.h - height) / 2.0).max(24.0).round();
+        let buttons_y = y + buttons_start_y;
+        let buttons = temp_buttons
+            .into_iter()
+            .map(|(label, action, rx, ry, w)| Button {
+                label,
+                action,
+                x: x + rx,
+                y: buttons_y + ry,
+                w,
+            })
+            .collect();
         Layout {
             x,
             y,
@@ -131,31 +239,76 @@ impl NoResources {
             }
             y += PARAGRAPH_GAP;
         }
-        for button in &layout.buttons {
-            let hovered = button.contains(ui.cursor);
-            let (plate, ink) = match (button.action, hovered) {
-                (Action::Open(_), false) => (color::accent(), color::on_accent()),
-                (Action::Open(_), true) => {
-                    (color::with_alpha(color::accent(), 0.85), color::on_accent())
-                }
-                (Action::Quit, false) => (color::raised(), color::text()),
-                (Action::Quit, true) => (color::hover(), color::text()),
-            };
-            let h = control();
-            ui.rounded(button.x, button.y, button.w, h, h / 2.0, plate);
-            let lw = ui.measure(Face::Medium, button_text(), &button.label);
-            let lx = button.x + ((button.w - lw) / 2.0).round();
+        let mut bottom_controls_y = y;
+        if let Some((pct, status)) = &self.progress {
+            let bar_y = layout
+                .buttons
+                .first()
+                .map_or(y + 12.0, |b| b.y);
+            let bar_h = 12.0;
+            ui.rounded(layout.x, bar_y, layout.width, bar_h, bar_h / 2.0, color::raised());
+            let fill_w = (layout.width * (*pct as f32 / 100.0)).clamp(0.0, layout.width);
+            if fill_w > 1.0 {
+                ui.rounded(layout.x, bar_y, fill_w, bar_h, bar_h / 2.0, color::accent());
+            }
             ui.text_line(
                 Face::Medium,
-                button_text(),
-                h,
-                lx,
-                button.y,
-                ink,
-                &button.label,
+                ui_theme::small(),
+                SMALL_LINE,
+                layout.x,
+                bar_y + bar_h + 8.0,
+                color::text(),
+                status,
             );
+            bottom_controls_y = bar_y + bar_h + 8.0 + SMALL_LINE;
+        } else {
+            let primary_action = self
+                .buttons
+                .first()
+                .map(|(_, a)| *a)
+                .filter(|a| *a != Action::Quit);
+            for button in &layout.buttons {
+                let hovered = button.contains(ui.cursor);
+                let is_primary = Some(button.action) == primary_action
+                    || matches!(button.action, Action::Open(_));
+                let (plate, ink) = match (is_primary, hovered) {
+                    (true, false) => (color::accent(), color::on_accent()),
+                    (true, true) => (color::with_alpha(color::accent(), 0.85), color::on_accent()),
+                    (false, false) => (color::raised(), color::text()),
+                    (false, true) => (color::hover(), color::text()),
+                };
+                let h = control();
+                ui.rounded(button.x, button.y, button.w, h, h / 2.0, plate);
+                let lw = ui.measure(Face::Medium, button_text(), &button.label);
+                let lx = button.x + ((button.w - lw) / 2.0).round();
+                ui.text_line(
+                    Face::Medium,
+                    button_text(),
+                    h,
+                    lx,
+                    button.y,
+                    ink,
+                    &button.label,
+                );
+                bottom_controls_y = bottom_controls_y.max(button.y + h);
+            }
         }
-        let small_y = layout.buttons[0].y + control() + 20.0;
+        let mut small_y = bottom_controls_y + 20.0;
+        if let Some(err) = &self.error_line {
+            for line in wrap(ui, Face::Medium, ui_theme::small(), err, layout.width) {
+                ui.text_line(
+                    Face::Medium,
+                    ui_theme::small(),
+                    SMALL_LINE,
+                    layout.x,
+                    small_y,
+                    crate::hud::rgba(248, 113, 113, 255),
+                    &line,
+                );
+                small_y += SMALL_LINE;
+            }
+            small_y += 6.0;
+        }
         for (i, line) in wrap(
             ui,
             Face::Regular,
@@ -181,6 +334,9 @@ impl NoResources {
 
     /// The button under the cursor (`ui.cursor`, in dp), if any.
     pub fn click(&self, ui: &Ui) -> Option<Action> {
+        if self.progress.is_some() {
+            return None;
+        }
         self.layout(ui)
             .buttons
             .iter()
@@ -231,9 +387,43 @@ impl Button {
 /// `text` broken at spaces into lines no wider than `width` dp (a longer word,
 /// such as a path, gets a line of its own).
 fn wrap(ui: &Ui, face: Face, size: f32, text: &str, width: f32) -> Vec<String> {
+    if !text.is_ascii() && !text.contains(' ') {
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        for ch in text.chars() {
+            let mut candidate = line.clone();
+            candidate.push(ch);
+            if !line.is_empty() && ui.measure(face, size, &candidate) > width {
+                lines.push(std::mem::take(&mut line));
+                line.push(ch);
+            } else {
+                line = candidate;
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+        return lines;
+    }
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split(' ') {
+        if !word.is_ascii() && ui.measure(face, size, word) > width {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            for ch in word.chars() {
+                let mut candidate = line.clone();
+                candidate.push(ch);
+                if !line.is_empty() && ui.measure(face, size, &candidate) > width {
+                    lines.push(std::mem::take(&mut line));
+                    line.push(ch);
+                } else {
+                    line = candidate;
+                }
+            }
+            continue;
+        }
         let candidate = if line.is_empty() {
             word.to_owned()
         } else {

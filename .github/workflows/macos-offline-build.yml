@@ -1,0 +1,153 @@
+name: macos-offline-build
+# Standalone macOS build & packaging workflow for Apple Silicon (arm64), Intel (x86_64), and Universal Horizon.app:
+# - Supports offline play out of the box + 1-click / drag-and-drop import of horizon-26.3-resources.zip
+# - Runs entirely on standard GitHub-hosted macOS runners (no self-hosted runner required)
+on:
+  push:
+    branches: [macos-offline]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a date-tagged GitHub Release with DMG and ZIP assets
+        type: boolean
+        default: true
+      release_tag:
+        description: Optional custom release tag (defaults to macos-YYYY.MM.DD)
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  HORIZON_TELEMETRY_URL: "off"
+
+jobs:
+  build-macos:
+    name: Build & Package macOS (arm64 + Intel x64 + Universal)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Install Rust toolchain & macOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-offline-dual-arch
+
+      - name: Compute build version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          date_str=$(date -u +%Y.%m.%d)
+          short_sha=$(git rev-parse --short=7 HEAD)
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "$tag" ]]; then
+            tag="macos-${date_str}"
+          fi
+          version="26.3-${date_str}-${short_sha}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests (guest-stack, resource-zip, dual-mode MSA auth)
+        shell: bash
+        run: |
+          cargo test --locked -p horizon-guest-stack
+          cargo test --locked -p horizon-mod-package --lib selection
+          cargo test --locked -p horizon-client-render --lib auth::msa::tests
+          cargo test --locked -p horizon-client-lib --lib resource_zip::tests
+          cargo test --locked -p horizon-client-lib --lib no_resources::tests
+
+      - name: Build Apple Silicon (aarch64-apple-darwin)
+        env:
+          HORIZON_VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin -p horizon-official --bin horizon-official
+          cp -f target/aarch64-apple-darwin/release/horizon-official target/aarch64-apple-darwin/release/horizon-client
+
+      - name: Build Intel (x86_64-apple-darwin)
+        env:
+          HORIZON_VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          cargo build --release --locked --target x86_64-apple-darwin -p horizon-official --bin horizon-official
+          cp -f target/x86_64-apple-darwin/release/horizon-official target/x86_64-apple-darwin/release/horizon-client
+
+      - name: Verify Rosetta 2 Intel startup & package DMG/ZIP bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x packaging/macos/package_game_app.sh
+          # Ensure Rosetta 2 is available on the runner to verify x86_64 binary startup
+          if ! /usr/bin/pgrep oahd >/dev/null 2>&1; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+          fi
+          target/aarch64-apple-darwin/release/horizon-client --help | grep -q -- '--resources'
+          arch -x86_64 target/x86_64-apple-darwin/release/horizon-client --help | grep -q -- '--resources'
+
+          mkdir -p dist
+          packaging/macos/package_game_app.sh \
+            target/aarch64-apple-darwin/release/horizon-client \
+            "${{ steps.meta.outputs.version }}" dist arm64
+          packaging/macos/package_game_app.sh \
+            target/x86_64-apple-darwin/release/horizon-client \
+            "${{ steps.meta.outputs.version }}" dist x64
+          packaging/macos/package_game_app.sh \
+            target/aarch64-apple-darwin/release/horizon-client \
+            "${{ steps.meta.outputs.version }}" dist universal \
+            target/x86_64-apple-darwin/release/horizon-client
+
+          (cd dist && shasum -a 256 horizon-macos-*.dmg horizon-macos-*-app.zip > SHA256SUMS.txt)
+          ls -lh dist/
+
+      - name: Upload macOS DMG & ZIP artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-macos-offline-${{ steps.meta.outputs.version }}
+          path: |
+            dist/horizon-macos-arm64.dmg
+            dist/horizon-macos-x64.dmg
+            dist/horizon-macos-universal.dmg
+            dist/horizon-macos-arm64-app.zip
+            dist/horizon-macos-x64-app.zip
+            dist/horizon-macos-universal-app.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_release == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dist/RELEASE_NOTES.md <<EOF
+          ## Horizon macOS Offline Edition (${VERSION})
+
+          - **原生双架构支持**：同时提供 Apple Silicon (\`arm64\`)、Intel (\`x64\`) 与双架构通用包 (\`universal\`)。
+          - **一键导入 \`horizon-26.3-resources.zip\` 即玩**：首次启动支持一键导入 \`Downloads/horizon-26.3-resources.zip\`、文件选择框或直接拖入窗口自动解压并启动。
+          - **免登录离线模式 + 微软正版双模式**：默认零门槛离线畅玩（主菜单左上角可随时自定义离线玩家名或切换微软设备码正版登录）。
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber \
+              dist/horizon-macos-*.dmg dist/horizon-macos-*-app.zip dist/SHA256SUMS.txt
+          else
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Horizon macOS Offline (${TAG})" \
+              --notes-file dist/RELEASE_NOTES.md \
+              dist/horizon-macos-*.dmg dist/horizon-macos-*-app.zip dist/SHA256SUMS.txt
+          fi

@@ -477,6 +477,11 @@ impl Loading {
                 }
             }
         }
+        if let Some(name) = super::account_center::poll_updates(&self.menu.clipboard)
+            && let Some(opts) = &mut self.options
+        {
+            opts.player_name = Some(name);
+        }
         self.drive_menu_mod_browser();
         self.restart_menu_resources()
     }
@@ -1122,6 +1127,48 @@ impl Loading {
         if !f11 && !synthetic {
             super::narrator::narrate_input(&mut self.menu.narration, &event, self.menu.cursor);
         }
+        if self
+            .menu
+            .title
+            .as_ref()
+            .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::Main))
+            && !self.menu.options_open
+            && self.menu.win.is_none()
+            && self.menu.pending.is_none()
+            && !matches!(
+                &event,
+                WindowEvent::CloseRequested
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::RedrawRequested
+                    | WindowEvent::ModifiersChanged(_)
+                    | WindowEvent::CursorMoved { .. }
+            )
+            && let Some(gui) = &self.gui
+        {
+            let batch = HudBatch::new(self.menu_size(), self.settings.gui_scale_inputs());
+            let pname = self
+                .options
+                .as_ref()
+                .map_or_else(|| "Player".into(), Options::player_name);
+            let (consumed, updated) = super::account_center::handle_main_menu_event(
+                &event,
+                &gui.atlas,
+                &batch,
+                self.menu.cursor,
+                self.menu.modifiers,
+                &self.menu.clipboard,
+                &pname,
+                &self.settings.language,
+            );
+            if let Some(name) = updated
+                && let Some(opts) = &mut self.options
+            {
+                opts.player_name = Some(name);
+            }
+            if consumed {
+                return Ok(());
+            }
+        }
         // Screen.keyPressed: Tab, the arrows and Enter move and press the
         // focus, unless the focused widget or the screen keeps them.
         if let WindowEvent::KeyboardInput {
@@ -1434,6 +1481,19 @@ impl Loading {
                 self.settings.file.bool("hideServerAddress"),
                 &mut |_, _| {},
             );
+            if matches!(title.mode, horizon_client::title::Mode::Main) {
+                let pname = self
+                    .options
+                    .as_ref()
+                    .map_or_else(|| "Player".into(), Options::player_name);
+                super::account_center::draw_on_main(
+                    &gui.atlas,
+                    batch,
+                    self.menu.cursor,
+                    &pname,
+                    &self.settings.language,
+                );
+            }
         }
         if let Some(focus) = self.menu.key_focus
             && self.menu.pending.is_none()

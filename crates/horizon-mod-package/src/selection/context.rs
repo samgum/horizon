@@ -96,13 +96,23 @@ impl LaunchArguments {
                 })
             })
             .collect();
-        Self::parse(
+        let explicit_game_dir = command
+            .get_args()
+            .any(|a| a == "--game-dir" || a == "--gameDir");
+        let prog = command.get_program().to_string_lossy();
+        let is_macos_app_bundle = prog.contains(".app/Contents/MacOS/")
+            || (cfg!(target_os = "macos") && cwd == Path::new("/"));
+        let mut parsed = Self::parse(
             args?.into_iter(),
             &cwd,
             &default_home,
             env("HORIZON_HOME").as_deref(),
         )
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        if is_macos_app_bundle && !explicit_game_dir {
+            parsed.context.game_dir = parsed.context.home.clone();
+        }
+        Ok(parsed)
     }
 
     /// Help and capability replies do not read mod packages or prepare jar data.
@@ -156,6 +166,10 @@ impl LaunchArguments {
                 | "--no-server-thread"
                 | "--pregen" => {
                     rest.push(Argument::Switch(arg));
+                }
+                _ if arg.starts_with("-psn_") => {}
+                _ if !arg.starts_with('-') && arg.to_ascii_lowercase().ends_with(".zip") => {
+                    rest.push(Argument::Value("--import-resources".into(), arg));
                 }
                 _ => {
                     let value = args.next().ok_or_else(|| MissingValue(arg.clone()))?;

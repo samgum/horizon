@@ -79,6 +79,8 @@ pub(crate) struct Options {
     pub(super) game_dir: Option<PathBuf>,
     /// `--quickPlaySingleplayer`, checked once the game folder is known.
     pub(super) quick_play: Option<String>,
+    /// `--import-resources PATH`: extract a `.zip` archive of prepared resources before starting.
+    pub(super) import_resources: Option<PathBuf>,
     pub(super) session_file: Option<String>,
     /// `--session-stdin`: the session file's JSON comes on standard input instead.
     pub(super) session_stdin: bool,
@@ -140,10 +142,66 @@ impl Options {
         if !o.developer_single_player {
             split::launcher::read_now();
         }
+        let starting_cwd = std::env::current_dir().unwrap_or_default();
         if let Some(dir) = o.game_dir.take() {
             std::fs::create_dir_all(&dir)
                 .and_then(|()| std::env::set_current_dir(&dir))
                 .map_err(|e| format!("game folder {}: {e}", dir.display()))?;
+        }
+        // Standalone dual-mode Account Center (Offline default "Player" + Microsoft Device Code):
+        // resolve saved identity when no launcher session file was supplied.
+        if !o.developer_single_player
+            && o.execution_role.is_client()
+            && horizon_client::auth::current().is_none()
+        {
+            let game_dir = std::env::current_dir().unwrap_or_default();
+            if horizon_client::auth::msa::AccountStore::exists(&game_dir) || !cfg!(test) {
+                let resolved = horizon_client::auth::msa::resolve_and_activate(
+                    &game_dir,
+                    &horizon_client::auth::msa::Endpoints::live(),
+                    false,
+                );
+                if o.player_name.is_none() {
+                    o.player_name = Some(resolved.player_name);
+                }
+                if let Some(note) = &resolved.notice {
+                    eprintln!("Horizon account: {note}");
+                }
+            }
+        }
+        // Support `--import-resources <zip>` or passing a `.zip` file directly to `--resources`.
+        let zip_to_import = o.import_resources.take().map(|p| (p, true)).or_else(|| {
+            let ext_is_zip = o
+                .resources
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+            ext_is_zip.then(|| (o.resources.clone(), false))
+        });
+        if let Some((raw_zip, force)) = zip_to_import {
+            let resolved_zip = if raw_zip.is_absolute() || raw_zip.exists() {
+                raw_zip
+            } else {
+                starting_cwd.join(raw_zip)
+            };
+            let target_dir = horizon_client::resource_zip::default_extracted_resources_dir();
+            eprintln!(
+                "Horizon: importing resources from {} -> {} ...",
+                resolved_zip.display(),
+                target_dir.display()
+            );
+            let last_logged = std::cell::Cell::new(0u8);
+            let extracted = horizon_client::resource_zip::import_resources(
+                &resolved_zip,
+                &target_dir,
+                force,
+                &|done, total, pct| {
+                    if pct >= last_logged.get().saturating_add(10) || pct == 100 {
+                        last_logged.set(pct);
+                        eprintln!("Horizon: extracting resources {pct}% ({done}/{total})");
+                    }
+                },
+            )?;
+            o.resources = extracted;
         }
         // Vanilla's quick play (Main, QuickPlay.joinSingleplayerWorld): only a
         // world that exists opens; else the title screen. --world also creates one.
@@ -180,16 +238,30 @@ impl Options {
     pub(super) fn from_launch(launch: LaunchArguments) -> Result<Option<Self>> {
         let installation_side = launch.installation_side();
         let LaunchArguments { context, rest } = launch;
-        let sibling = std::env::current_exe()?
+        let exe_dir = std::env::current_exe()?
             .parent()
             .ok_or("missing executable directory")?
-            .join("resources");
+            .to_path_buf();
+        let sibling = exe_dir.join("resources");
+        let bundle_resources = exe_dir.join("../Resources/resources");
+        let local_dev =
+            std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION);
+        let extracted_home = horizon_client::resource_zip::default_extracted_resources_dir();
+        let default_resources = if sibling.join("horizon-resources.json").exists() {
+            sibling
+        } else if bundle_resources.join("horizon-resources.json").exists() {
+            bundle_resources
+        } else if local_dev.join("horizon-resources.json").exists() {
+            local_dev
+        } else if !cfg!(test)
+            && (extracted_home.join("horizon-resources.json").exists() || cfg!(target_os = "macos"))
+        {
+            extracted_home
+        } else {
+            local_dev
+        };
         let mut o = Self {
-            resources: if sibling.join("horizon-resources.json").exists() {
-                sibling
-            } else {
-                std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
-            },
+            resources: default_resources,
             distance: 12,
             distance_override: None,
             seed: 0,
@@ -237,6 +309,7 @@ impl Options {
             fullscreen: false,
             game_dir: Some(context.game_dir),
             quick_play: None,
+            import_resources: None,
             session_file: std::env::var("HORIZON_SESSION_FILE").ok(),
             session_stdin: false,
         };
@@ -289,6 +362,7 @@ impl Options {
                     let read = || -> Result<()> {
                         match arg.as_str() {
                             "--resources" => o.resources = value.into(),
+                            "--import-resources" => o.import_resources = Some(value.into()),
                             "--render-distance" | "--radius" => {
                                 o.distance = value.parse()?;
                                 o.distance_override = Some(o.distance);

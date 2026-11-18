@@ -1,16 +1,29 @@
-//! A game started without its prepared files (the game build run by hand, not
-//! through a launcher): a window that says where to get them
-//! (`horizon_client::no_resources`) and quits when it is closed. No loader, no
-//! crash report: nothing went wrong in the game.
+//! A game started without its prepared files (standalone `.app` or executable
+//! launched without pre-extracted resources): shows an interactive setup screen
+//! supporting 1-click import from `~/Downloads`, native `.zip` file selection,
+//! and drag-and-drop of `horizon-26.3-resources.zip`, then immediately launches
+//! into the game once extraction finishes.
 use super::*;
 use horizon_client::no_resources::{Action, NoResources};
+use std::sync::mpsc::{self, Receiver};
 use winit::event::MouseButton;
+
+enum ImportEvent {
+    Cancelled,
+    Progress { done: usize, total: usize, pct: u8 },
+    Finished(std::result::Result<PathBuf, String>),
+}
 
 struct Missing {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     gui: UiResources,
     screen: NoResources,
+    zh: bool,
+    target_dir: PathBuf,
+    detected_zip: Option<PathBuf>,
+    import_rx: Option<Receiver<ImportEvent>>,
+    imported_dir: Option<PathBuf>,
     /// The pointer in physical pixels.
     pointer: (f64, f64),
     api: horizon_client::graphics::GraphicsApi,
@@ -18,13 +31,20 @@ struct Missing {
     error: Option<Box<dyn std::error::Error>>,
 }
 
-/// Shows the screen until the player closes it.
-pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<()> {
-    // The player's language, from the strings compiled in: there are no prepared ones.
+/// Shows the interactive resource-import screen until the player imports a `.zip`
+/// archive (returning `Ok(Some(extracted_dir))`) or closes it (`Ok(None)`).
+pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<Option<PathBuf>> {
     horizon_client::lang::set(horizon_client::lang::Language::load(
         &[],
         &settings.language,
     ));
+    let zh = horizon_client::resource_zip::prefer_chinese(&settings.language);
+    let detected_zip = horizon_client::resource_zip::find_downloads_resource_zip();
+    let target_dir = if looked_in.is_absolute() {
+        looked_in.to_path_buf()
+    } else {
+        horizon_client::resource_zip::default_extracted_resources_dir()
+    };
     let mut app = Missing {
         window: None,
         renderer: None,
@@ -35,7 +55,12 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
             panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
             splashes: Arc::from(""),
         },
-        screen: NoResources::new(looked_in, horizon_hooks::engine::get_the_game()),
+        screen: NoResources::new_interactive(&target_dir, zh, detected_zip.as_deref()),
+        zh,
+        target_dir,
+        detected_zip,
+        import_rx: None,
+        imported_dir: None,
         pointer: (0.0, 0.0),
         api: settings.horizon.api,
         settings: settings.clone(),
@@ -43,7 +68,10 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
     };
 
     EventLoop::new()?.run_app(&mut app)?;
-    app.error.map_or(Ok(()), Err)
+    match app.error {
+        Some(err) => Err(err),
+        None => Ok(app.imported_dir),
+    }
 }
 
 impl Missing {
@@ -53,7 +81,6 @@ impl Missing {
             .map_or([1280, 720], |r| [r.config.width, r.config.height])
     }
 
-    /// `f` over a Ui of the window's size, the cursor where the pointer is.
     fn with_ui<R>(
         &self,
         batch: &mut HudBatch,
@@ -80,10 +107,106 @@ impl Missing {
             Ok(false) => {}
             Err(e) => log::warn!("Horizon: frame failed: {e}"),
         }
-        // The frame was not shown (the first one often isn't): the glyphs it
-        // rasterized never reached the atlas, so draw them again next frame.
         horizon_client::ui_theme::reset_atlas();
         if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn start_import(&mut self, source: Option<PathBuf>) {
+        if self.import_rx.is_some() {
+            return;
+        }
+        let zh = self.zh;
+        let target_dir = self.target_dir.clone();
+        self.screen.set_error(None);
+        let initial_msg = if source.is_some() {
+            if zh {
+                "正在准备解压游戏资源…".to_owned()
+            } else {
+                "Preparing to extract resources…".to_owned()
+            }
+        } else if zh {
+            "请在弹出的文件选择框中选择 .zip 资源压缩包…".to_owned()
+        } else {
+            "Select a .zip resource archive in the file dialog…".to_owned()
+        };
+        self.screen.set_progress(Some((1, initial_msg)));
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.import_rx = Some(rx);
+        let _ = std::thread::Builder::new()
+            .name("horizon-res-import".into())
+            .spawn(move || {
+                let picked = match source {
+                    Some(p) => p,
+                    None => match horizon_client::resource_zip::pick_resource_zip_dialog(zh) {
+                        Some(p) => p,
+                        None => {
+                            let _ = tx.send(ImportEvent::Cancelled);
+                            return;
+                        }
+                    },
+                };
+                let res = horizon_client::resource_zip::import_resources(
+                    &picked,
+                    &target_dir,
+                    true,
+                    &|done, total, pct| {
+                        let _ = tx.send(ImportEvent::Progress { done, total, pct });
+                    },
+                );
+                let _ = tx.send(ImportEvent::Finished(res));
+            });
+    }
+
+    fn poll_import(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(rx) = &self.import_rx else {
+            return;
+        };
+        let mut changed = false;
+        let mut clear_rx = false;
+        while let Ok(ev) = rx.try_recv() {
+            changed = true;
+            match ev {
+                ImportEvent::Cancelled => {
+                    self.screen.set_progress(None);
+                    clear_rx = true;
+                }
+                ImportEvent::Progress { done, total, pct } => {
+                    let status = if self.zh {
+                        format!("正在解压游戏资源: {pct}% ({done} / {total})…")
+                    } else {
+                        format!("Extracting game resources: {pct}% ({done} / {total})…")
+                    };
+                    self.screen.set_progress(Some((pct.max(2), status)));
+                }
+                ImportEvent::Finished(Ok(dir)) => {
+                    let done_msg = if self.zh {
+                        "解压完成！正在启动 Horizon…".to_owned()
+                    } else {
+                        "Extraction complete! Launching Horizon…".to_owned()
+                    };
+                    self.screen.set_progress(Some((100, done_msg)));
+                    self.imported_dir = Some(dir);
+                    clear_rx = true;
+                    event_loop.exit();
+                    break;
+                }
+                ImportEvent::Finished(Err(err)) => {
+                    self.screen.set_progress(None);
+                    self.screen.set_error(Some(err));
+                    clear_rx = true;
+                }
+            }
+        }
+        if clear_rx {
+            self.import_rx = None;
+        }
+        if changed && let Some(window) = &self.window {
             window.request_redraw();
         }
     }
@@ -92,6 +215,12 @@ impl Missing {
         let mut batch = HudBatch::new(self.size(), self.settings.gui_scale_inputs());
         match self.with_ui(&mut batch, |ui| self.screen.click(ui)) {
             Some(Action::Open(address)) => packs::open_uri(address),
+            Some(Action::ImportDetected) => {
+                if let Some(zip_path) = self.detected_zip.clone() {
+                    self.start_import(Some(zip_path));
+                }
+            }
+            Some(Action::PickZip) => self.start_import(None),
             Some(Action::Quit) => event_loop.exit(),
             None => {}
         }
@@ -140,7 +269,11 @@ impl ApplicationHandler for Missing {
             return;
         };
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if self.import_rx.is_none() {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -148,6 +281,9 @@ impl ApplicationHandler for Missing {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::DroppedFile(path) => {
+                self.start_import(Some(path));
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
                 window.request_redraw();
@@ -159,7 +295,8 @@ impl ApplicationHandler for Missing {
             } => self.click(event_loop),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
-                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape) =>
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    && self.import_rx.is_none() =>
             {
                 event_loop.exit()
             }
@@ -172,9 +309,12 @@ impl ApplicationHandler for Missing {
             event_loop.exit();
             return;
         }
-        // Wake now and then for Ctrl+C in the console; redraws come with events.
-        event_loop.set_control_flow(ControlFlow::WaitUntil(
-            Instant::now() + Duration::from_millis(250),
-        ));
+        self.poll_import(event_loop);
+        let delay = if self.import_rx.is_some() {
+            Duration::from_millis(30)
+        } else {
+            Duration::from_millis(200)
+        };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + delay));
     }
 }
