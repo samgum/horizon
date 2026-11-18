@@ -295,7 +295,7 @@ impl Default for Settings {
             sprint_window: 7,
             operator_items_tab: false,
             quit_shortcuts: true,
-            ctrl_click_emulates_right_click: false,
+            ctrl_click_emulates_right_click: cfg!(target_os = "macos"),
             horizon: Default::default(),
             startup_api: Default::default(),
             video_modes: Vec::new(),

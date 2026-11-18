@@ -230,7 +230,7 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
         def("mouseWheelSensitivity", O(WheelSensitivity), V::Double(1.0)),
         b("allowCursorChanges", true),
         b("quitShortcuts", true),
-        b("ctrlClickEmulatesRightClick", false),
+        b("ctrlClickEmulatesRightClick", cfg!(target_os = "macos")),
         def("glDebugVerbosity", PI, V::Int(1)),
         pb("skipMultiplayerWarning", false),
         b("hideMatchedNames", true),

@@ -22,6 +22,7 @@ pub(super) struct StartupMenu {
     pointer: (f64, f64),
     modifiers: ModifiersState,
     physical_keys: HashSet<KeyCode>,
+    right_click_emulation: horizon_client_input::mouse::RightClickEmulation,
     dragging: bool,
     clipboard: SystemClipboard,
     selection: AppendSelection,
@@ -1101,8 +1102,18 @@ impl Loading {
     pub(super) fn menu_event(
         &mut self,
         event_loop: &dyn EventLoopCtl,
-        event: WindowEvent,
+        mut event: WindowEvent,
     ) -> Result<()> {
+        if let WindowEvent::MouseInput { state, button, .. } = &mut event
+            && *button == MouseButton::Left
+            && self.menu.right_click_emulation.is_right_click(
+                *state == ElementState::Pressed,
+                self.menu.modifiers.control_key(),
+                cfg!(target_os = "macos") && self.settings.ctrl_click_emulates_right_click,
+            )
+        {
+            *button = MouseButton::Right;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {
@@ -1329,9 +1340,14 @@ impl Loading {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let scale_factor = self
+                    .window
+                    .as_ref()
+                    .map_or(1.0, |w| w.scale_factor())
+                    .max(1.0);
                 let raw = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => (p.y / 30.0) as f32,
+                    MouseScrollDelta::PixelDelta(p) => (p.y / (scale_factor * 18.0)) as f32,
                 };
                 let amount = if self.settings.discrete_scroll {
                     horizon_client::mouse::java_signum(f64::from(raw)) as f32

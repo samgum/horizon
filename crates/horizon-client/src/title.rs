@@ -434,6 +434,7 @@ pub struct Title {
     /// The focused text field's cursor, selection and scroll.
     caret: RefCell<crate::ui::Caret>,
     scroll: Cell<crate::ui::Scroll>,
+    cycle_wheel_accum: Cell<f32>,
     create_return_to_main: bool,
     /// The Generate New World tile's request while the title shows Create New World
     /// (`RealmsCreateWorldFlow.createWorld`): its settings upload into the Realm's slot.
@@ -857,6 +858,7 @@ impl Title {
             search_focused: false,
             caret: RefCell::default(),
             scroll: Cell::default(),
+            cycle_wheel_accum: Cell::new(0.0),
             create_return_to_main: false,
             realms_create: None,
             message_lines: Cell::new(1),
@@ -1324,10 +1326,21 @@ impl Title {
                     && cursor.1 >= b.y
                     && cursor.1 < b.y + 20.0
             }) {
-                let step = if delta > 0.0 { -1 } else { 1 };
-                options.cycle(b.id, creative, step);
-                return true;
+                let mut acc = self.cycle_wheel_accum.get();
+                if acc != 0.0 && (acc > 0.0) != (delta > 0.0) {
+                    acc = 0.0;
+                }
+                acc += delta;
+                if acc.abs() >= 1.0 {
+                    let step = if acc > 0.0 { -1 } else { 1 };
+                    self.cycle_wheel_accum.set(acc - acc.trunc());
+                    options.cycle(b.id, creative, step);
+                    return true;
+                }
+                self.cycle_wheel_accum.set(acc);
+                return false;
             }
+            self.cycle_wheel_accum.set(0.0);
         }
         let Mode::Select { worlds, .. } = &self.mode else {
             return false;

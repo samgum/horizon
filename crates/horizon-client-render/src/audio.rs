@@ -118,6 +118,8 @@ struct Mixer {
     /// A mod's muffle of the sounds it does not exempt.
     muffle: Muffle,
     limiter_peak: f32,
+    /// Compensates mono Ambisonic panner loss vs stereo music/UI on live macOS output.
+    spatial_presence_boost: bool,
     /// The output device the stream was opened on (`Library.currentDeviceName`).
     #[cfg(feature = "audio")]
     device_name: String,
@@ -1052,7 +1054,13 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 (0.0, [0.0, 0.0])
             } else {
                 let distance = d_sqr.sqrt() as f32;
-                let gain = c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance);
+                let presence = if mixer.spatial_presence_boost && !c.relative {
+                    let near = (1.0 - (distance / 2.5).clamp(0.0, 1.0)) * 0.65;
+                    1.65 + near
+                } else {
+                    1.0
+                };
+                let gain = c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance) * presence;
                 let [mut left, mut right] = if c.relative {
                     stereo_gains_with_length(d[0] as f32, d[1] as f32, -d[2] as f32, distance)
                 } else {
@@ -1521,7 +1529,10 @@ impl Audio {
                  launcher (or run horizon-prepare sounds)"
             );
         }
-        let mixer = Arc::new(Mutex::new(Mixer::default()));
+        let mixer = Arc::new(Mutex::new(Mixer {
+            spatial_presence_boost: output && cfg!(target_os = "macos"),
+            ..Mixer::default()
+        }));
         let opened = if output {
             Self::open_named(mixer.clone(), target_device)
         } else {
@@ -3571,5 +3582,25 @@ mod tests {
 
     fn volume_of(audio: &Audio, id: InstanceId) -> Option<f32> {
         audio.engine.instance(id).map(|i| i.volume)
+    }
+
+    #[test]
+    fn spatial_presence_boost_lifts_near_field_footsteps_without_clipping() {
+        let mut plain = Mixer::default();
+        let mut boosted = Mixer {
+            spatial_presence_boost: true,
+            ..Mixer::default()
+        };
+        for m in [&mut plain, &mut boosted] {
+            m.listener = [0.0, 1.62, 0.0];
+            let mut step = channel(vec![0.2; 4], Some(16.0), [0.0, 0.0, 0.0], false);
+            step.gain = 0.3;
+            m.channels.insert(1, step);
+        }
+        let (mut out_plain, mut out_boost) = ([0.0; 4], [0.0; 4]);
+        mix(&mut plain, &mut out_plain, 2, 48_000);
+        mix(&mut boosted, &mut out_boost, 2, 48_000);
+        assert!(out_boost[0] > out_plain[0] * 1.8);
+        assert!(out_boost.iter().all(|s| s.abs() <= 1.0));
     }
 }

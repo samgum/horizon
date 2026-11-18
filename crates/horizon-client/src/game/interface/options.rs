@@ -406,7 +406,7 @@ impl Game<'_> {
                 Event::Close if self.ui.options.resource_error.is_some() => {}
                 Event::Close => {
                     self.settings.save(&Self::options_path());
-                    let to_game = self.options_from_title;
+                    let to_game = self.options_from_title && self.title.is_none();
                     let back = if let Some(screen) = self.panel.recipes_settings_return.take() {
                         screen
                     } else if std::mem::take(&mut self.options_to_world_options) {
@@ -417,8 +417,10 @@ impl Game<'_> {
                         Screen::Paused
                     };
                     self.set_screen(back);
-                    if to_game {
+                    if to_game && back == Screen::Playing {
                         self.capture(true);
+                    } else {
+                        self.capture(false);
                     }
                     self.dragging = false;
                     // Closed from calibration (horizon-ctl, a lost window): out of it.
@@ -426,6 +428,9 @@ impl Game<'_> {
                 }
                 Event::Language(code) => {
                     self.load_language(&code);
+                    if self.title.is_some() || self.screen != Screen::Playing {
+                        self.capture(false);
+                    }
                 }
                 Event::Packs(_) => {
                     self.settings.save(&Self::options_path());

@@ -34,8 +34,10 @@
 - **双模式账号中心（免登录离线模式 + 微软正版共存）**：
   - 默认启用 **离线模式（`Player`）**，打开应用零登录门禁直达主界面，随时可在主菜单左上角自定义 `1~16` 位离线玩家名进行单机与离线服测试。
   - 同时支持通过 **Microsoft OAuth 2.0 设备码** 登录正版账号（自动复制验证码并拉起浏览器），敏感令牌采用 **macOS 系统钥匙串（Keychain）** 加密保存并支持自动续期、自定义 Azure `Client ID` 与调试 `Session JSON` 导入。
-- **Mac 全芯片原生兼容（M 芯片 + Intel 芯片）**：
+- **Mac 全芯片原生兼容（M 芯片 + Intel 芯片）与原生触控板/声学适配**：
   - 修复了 `x86_64-apple-darwin` 在 Rosetta 2 及部分 macOS 环境下主线程 `GuestStackUnavailable` 退出的上游隐患，Intel 真机与 M 芯片均稳定运行。
+  - 原生适配 **MacBook 触控板**：支持 Retina DPI 自适应双指平滑滚动（设置、语言列表、存档列表、创造物品栏、聊天记录逐行累计滚动）、防惯性乱跳的双指快捷栏切换，以及默认开启 **`Control + 轻点` 模拟右键**（双指轻点右键同样原生支持）。
+  - 针对 Mac 扬声器与耳机优化了单声道世界空间音效（脚步声、挖掘/放置方块、近场交互音效）与立体声背景音乐的响度平衡。
 
 ---
 
@@ -159,7 +161,10 @@ This branch (`macos-offline`) packages the pure-Rust [Horizon](https://github.co
 - **Dual-Mode Account Center (Instant Offline Mode + Microsoft Genuine Sign-In)**:
   - Starts in **Offline Mode (`Player`)** out of the box with zero login gate. Click the top-left account pill on the Main Menu anytime to customize your `1..=16` character offline username.
   - Also supports **Microsoft OAuth 2.0 Device-Code** sign-in for online-mode servers, sealing tokens inside the **macOS Keychain** (`dev.horizon.macos.msa`) with automatic token renewal, custom Azure `Client ID`, and debug `Session JSON` paste support.
-- **Apple Silicon & Intel Ready**: Resolves the `x86_64-apple-darwin` main-thread `GuestStackUnavailable` startup issue under Rosetta 2 and Intel macOS.
+- **Apple Silicon & Intel Ready + Native macOS Trackpad & Audio Tuning**:
+  - Resolves the `x86_64-apple-darwin` main-thread `GuestStackUnavailable` startup issue under Rosetta 2 and Intel macOS.
+  - Full **MacBook Trackpad** support: Retina-aware smooth two-finger scrolling across Options, Language selection, World/Server lists, Creative inventory, and Chat history; momentum-safe hotbar slot swiping; and **`Control + Click` right-click emulation** enabled by default alongside two-finger right-click.
+  - Balanced near-field & mono spatial sound presence (footsteps, block breaking/placing) against direct stereo music on Mac speakers and headphones.
 
 ---
 

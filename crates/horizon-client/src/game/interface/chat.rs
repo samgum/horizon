@@ -1410,9 +1410,19 @@ impl Game<'_> {
             return;
         }
         // ChatScreen.mouseScrolled: `hasShiftDown`, either Shift key.
+        // Accumulate fractional trackpad PixelDelta values so sub-line steps
+        // aren't truncated to zero.
         let shift = self.has_shift_down();
-        let amount = amount.clamp(-1.0, 1.0) * if shift { 1.0 } else { 7.0 };
-        self.ui.chat.scroll_by(amount as i32, true);
+        let delta = amount.clamp(-1.0, 1.0) * if shift { 1.0 } else { 7.0 };
+        if self.chat_scroll_accum != 0.0 && (self.chat_scroll_accum > 0.0) != (delta > 0.0) {
+            self.chat_scroll_accum = 0.0;
+        }
+        self.chat_scroll_accum += delta;
+        let lines = self.chat_scroll_accum.trunc() as i32;
+        if lines != 0 {
+            self.chat_scroll_accum -= lines as f32;
+            self.ui.chat.scroll_by(lines, true);
+        }
     }
     pub(super) fn chat_click(&mut self) {
         let cursor = self.cursor;

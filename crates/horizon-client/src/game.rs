@@ -1433,6 +1433,7 @@ struct Game<'a> {
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
+    chat_scroll_accum: f32,
     /// `ClientAvatarState`: walked distance and view bob.
     avatar: horizon_client::camera::AvatarBob,
     flash: u32,
@@ -9563,11 +9564,36 @@ impl Game<'_> {
                 }
                 WindowEvent::MouseWheel { .. }
                     if self.screen == Screen::Playing && self.replay.driver.is_some() => {}
-                WindowEvent::MouseWheel { delta, .. } => {
+                WindowEvent::MouseWheel { delta, phase, .. } => {
+                    let scale_factor = self
+                        .window
+                        .as_ref()
+                        .map_or(1.0, |w| w.scale_factor())
+                        .max(1.0);
+                    let is_pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
-                        MouseScrollDelta::PixelDelta(p) => (p.x / 30.0, p.y / 30.0),
+                        MouseScrollDelta::PixelDelta(p) => {
+                            (p.x / (scale_factor * 18.0), p.y / (scale_factor * 18.0))
+                        }
                     };
+                    let (hotbar_x, hotbar_y) = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
+                        MouseScrollDelta::PixelDelta(p) => {
+                            (p.x / (scale_factor * 48.0), p.y / (scale_factor * 48.0))
+                        }
+                    };
+                    if is_pixel
+                        && matches!(
+                            phase,
+                            winit::event::TouchPhase::Started
+                                | winit::event::TouchPhase::Ended
+                                | winit::event::TouchPhase::Cancelled
+                        )
+                    {
+                        self.mouse.scroll = Default::default();
+                        self.chat_scroll_accum = 0.0;
+                    }
                     // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity.
                     let discrete = self.settings.discrete_scroll;
                     let wheel_sensitivity = f64::from(self.settings.mouse_wheel_sensitivity);
@@ -9646,18 +9672,21 @@ impl Game<'_> {
                     if self.hotbar_takes_wheel() {
                         let scroll =
                             self.mouse
-                                .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity);
+                                .on_scroll(hotbar_x, hotbar_y, discrete, wheel_sensitivity);
                         let (horizontal_steps, vertical_steps) =
                             scroll.map_or((0, 0), |(_, steps)| steps);
                         if self.hotbar_scroll_canceled(
-                            [scaled(raw_x), scaled(raw_y)],
+                            [scaled(hotbar_x), scaled(hotbar_y)],
                             [horizontal_steps, vertical_steps],
                         ) {
                             return Ok(());
                         }
-                        let Some((wheel, _)) = scroll else {
+                        let Some((mut wheel, _)) = scroll else {
                             return Ok(());
                         };
+                        if is_pixel && !discrete {
+                            wheel = wheel.clamp(-1, 1);
+                        }
                         self.hotbar_wheel_step(wheel, vertical_steps);
                     }
                     if self.screen == Screen::Chat && d != 0.0 {
@@ -10930,6 +10959,7 @@ impl<'a> Game<'a> {
             narration: Default::default(),
             options_from_title: false,
             dragging: false,
+            chat_scroll_accum: 0.0,
             avatar: Default::default(),
             flash: 0,
             custom_sky: Default::default(),

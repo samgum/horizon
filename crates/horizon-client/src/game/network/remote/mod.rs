@@ -6489,10 +6489,17 @@ impl Game<'_> {
                     let at = [position.x, position.y, position.z];
                     let sounds = self.own_sound_type(at, state, mod_api::BlockSoundCause::Step);
                     // Player.playStepSound: muffled under the swim sound in water.
-                    let (volume, pitch) = if muffled {
-                        (sounds.volume * 0.05, sounds.pitch * 0.8)
+                    // On macOS speakers, vanilla's -23.6 dB grass step Ogg files at 0.15
+                    // fall ~40 dB below stereo direct music; lift local step gain slightly.
+                    let (muffled_k, step_k) = if cfg!(all(target_os = "macos", not(test))) {
+                        (0.12, 0.35)
                     } else {
-                        (sounds.volume * 0.15, sounds.pitch)
+                        (0.05, 0.15)
+                    };
+                    let (volume, pitch) = if muffled {
+                        ((sounds.volume * muffled_k).min(1.0), sounds.pitch * 0.8)
+                    } else {
+                        ((sounds.volume * step_k).min(1.0), sounds.pitch)
                     };
                     self.play_client_player_sound(&sounds.step, volume, pitch);
                 }

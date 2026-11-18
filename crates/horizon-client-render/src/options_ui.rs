@@ -1893,6 +1893,8 @@ pub struct OptionsUi {
     /// (the page, the scroll, the search text, a setting's shown value) bumps
     /// it, so the layout is made again once and not on every draw or click.
     rev: u64,
+    /// Accumulated sub-step trackpad scroll for discrete cycle/GUI-scale actions.
+    wheel_step_accum: f32,
     /// The page's layout at `layout_key`: shared by the drawing, the hit
     /// tests and the scroll, so all three read the same rectangles.
     layout_cache: Option<((f32, f32, u64, u32), std::sync::Arc<OptionsLayout>)>,
@@ -1971,6 +1973,7 @@ impl Default for OptionsUi {
             row_bands: Vec::new(),
             wide_extras: Vec::new(),
             rev: 0,
+            wheel_step_accum: 0.0,
             layout_cache: None,
             #[cfg(test)]
             layouts_built: 0,
@@ -3741,17 +3744,39 @@ impl OptionsUi {
         });
         match hovered {
             Some(HoveredControl::Cycle(opt)) if amount != 0.0 => {
-                self.cycle_option(s, opt, amount > 0.0, framebuffer)
+                if let Some(up) = Self::take_wheel_step(&mut self.wheel_step_accum, amount) {
+                    self.cycle_option(s, opt, up, framebuffer)
+                } else {
+                    Vec::new()
+                }
             }
             Some(HoveredControl::Extra(item)) if amount != 0.0 => {
-                item.cycle(&mut s.extras, amount > 0.0);
-                vec![Event::Changed]
+                if let Some(up) = Self::take_wheel_step(&mut self.wheel_step_accum, amount) {
+                    item.cycle(&mut s.extras, up);
+                    vec![Event::Changed]
+                } else {
+                    Vec::new()
+                }
             }
             Some(_) => Vec::new(),
             None => {
+                self.wheel_step_accum = 0.0;
                 self.scroll_at(s, size, cursor, amount);
                 Vec::new()
             }
+        }
+    }
+    fn take_wheel_step(accum: &mut f32, amount: f32) -> Option<bool> {
+        if *accum != 0.0 && (*accum > 0.0) != (amount > 0.0) {
+            *accum = 0.0;
+        }
+        *accum += amount;
+        if accum.abs() >= 1.0 {
+            let up = *accum > 0.0;
+            *accum -= accum.trunc();
+            Some(up)
+        } else {
+            None
         }
     }
     /// The mouse wheel at the cursor.
@@ -3788,6 +3813,9 @@ impl OptionsUi {
         framebuffer: [i32; 2],
         amount: f32,
     ) -> Vec<Event> {
+        let Some(up) = Self::take_wheel_step(&mut self.wheel_step_accum, amount) else {
+            return Vec::new();
+        };
         let max = i64::from(crate::window::calculate_scale(
             framebuffer,
             0,
@@ -3798,7 +3826,7 @@ impl OptionsUi {
         } else {
             i64::from(s.gui_scale)
         };
-        let step = i64::from(amount > 0.0) - i64::from(amount < 0.0);
+        let step = if up { 1 } else { -1 };
         let new = old + step;
         if new == 0 || new > max {
             return Vec::new();

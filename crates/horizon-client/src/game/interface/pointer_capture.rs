@@ -151,6 +151,7 @@ impl Game<'_> {
         // are screens over the world that keep the pointer.
         if capture
             && ((!self.focused && !self.unclaimed_window && !self.scripted_run())
+                || self.title.is_some()
                 || self.server_packs.prompt.is_some()
                 || self.dialog_open()
                 || self.command_prompt.is_some())

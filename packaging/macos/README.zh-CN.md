@@ -20,8 +20,10 @@
      - 随时自定义 `1~16` 位离线玩家名并实时生效；
      - 支持通过 **Microsoft OAuth 2.0 设备码** 登录正版账号（令牌通过 macOS 系统钥匙串 Keychain 安全存储并支持自动续期），也可一键粘贴自定义 Azure `Client ID`、导入调试 `Session JSON` 或更换 `.zip` 资源包。
 
-3. **Apple Silicon (`arm64`) + Intel (`x86_64`) + Universal 全架构支持**
+3. **Apple Silicon (`arm64`) + Intel (`x86_64`) + Universal 全架构与 Mac 专属体验适配**
    - 修复了 `x86_64-apple-darwin` 在 Rosetta 2 及部分 macOS 环境下主线程 `GuestStackUnavailable` 退出问题。
+   - 首次引导页内置 macOS 系统黑体（STHeiti / Hiragino）矢量中文字体回退，未导入资源包前中文提示清晰无乱码。
+   - 原生适配 MacBook 触控板（Retina 双指平滑滚动、聊天记录逐行累计滚动、防惯性乱跳快捷栏切换、默认开启 `Control + 轻点` 模拟右键）与单声道近场脚步声/世界音效响度补偿。
 
 ## 本地编译与打包
 

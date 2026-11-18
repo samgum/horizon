@@ -131,6 +131,35 @@ const TEST_FONTS: Option<horizon_client_render::menu_style::Fonts> =
     });
 struct Fonts {
     faces: [FontRef<'static>; 4],
+    cjk: Option<FontRef<'static>>,
+}
+fn system_cjk_font() -> Option<FontRef<'static>> {
+    use std::sync::OnceLock;
+    static CJK: OnceLock<Option<FontRef<'static>>> = OnceLock::new();
+    CJK.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        const CANDIDATES: &[&str] = &[
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/Supplemental/Songti.ttc",
+        ];
+        #[cfg(not(target_os = "macos"))]
+        const CANDIDATES: &[&str] = &[];
+        for path in CANDIDATES {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            if let Ok(font) = FontRef::try_from_slice_and_index(leaked, 0)
+                .or_else(|_| FontRef::try_from_slice(leaked))
+            {
+                return Some(font);
+            }
+        }
+        None
+    })
+    .clone()
 }
 impl Fonts {
     /// The faces given in `menu_style`; none given, none (unit tests take the design system's).
@@ -146,16 +175,19 @@ impl Fonts {
                 f(given.semibold),
                 f(given.mono),
             ],
+            cjk: system_cjk_font(),
         })
     }
     fn face(&self, f: Face) -> &FontRef<'static> {
         &self.faces[f as usize]
     }
     /// The ab_glyph scale for an em size in pixels.
-    fn scale(&self, f: Face, px: f32) -> PxScale {
-        let font = self.face(f);
+    fn scale_of(font: &FontRef<'static>, px: f32) -> PxScale {
         let upem = font.units_per_em().unwrap_or(1000.0);
         PxScale::from(px * font.height_unscaled() / upem)
+    }
+    fn scale(&self, f: Face, px: f32) -> PxScale {
+        Self::scale_of(self.face(f), px)
     }
 }
 /// `text` without its `§` formatting codes (`StringDecomposer.iterateFormatted`
@@ -176,6 +208,7 @@ pub(crate) fn unformatted(text: &str) -> impl Iterator<Item = char> + '_ {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Key {
     Glyph(Face, u16, u16),
+    FallbackGlyph(u16, u16),
     /// A quarter disc (`false`) or a 1px quarter ring of this radius in pixels.
     Corner(u16, bool),
 }
@@ -271,22 +304,16 @@ impl Cache {
             h,
         })
     }
-    fn glyph(&mut self, atlas: &HudAtlas, face: Face, id: ab_glyph::GlyphId, px: f32) -> Cached {
-        let size = (px * 4.0).round() as u16;
-        let key = Key::Glyph(face, id.0, size);
-        if let Some(c) = self.entries.get(&key) {
-            return *c;
-        }
-        let Some(fonts) = &self.fonts else {
-            return Cached {
-                rect: None,
-                left: 0.0,
-                top: 0.0,
-            };
-        };
-        let scale = fonts.scale(face, f32::from(size) / 4.0);
+    fn rasterize_glyph(
+        &mut self,
+        atlas: &HudAtlas,
+        key: Key,
+        font: &FontRef<'static>,
+        id: ab_glyph::GlyphId,
+        scale: PxScale,
+    ) -> Cached {
         let glyph = id.with_scale_and_position(scale, ab_glyph::point(0.0, 0.0));
-        let made = match fonts.face(face).outline_glyph(glyph) {
+        let made = match font.outline_glyph(glyph) {
             Some(outline) => {
                 let b = outline.px_bounds();
                 let (w, h) = (b.width() as u32, b.height() as u32);
@@ -316,6 +343,39 @@ impl Cache {
             self.entries.insert(key, made);
         }
         made
+    }
+    fn glyph(&mut self, atlas: &HudAtlas, face: Face, id: ab_glyph::GlyphId, px: f32) -> Cached {
+        let size = (px * 4.0).round() as u16;
+        let key = Key::Glyph(face, id.0, size);
+        if let Some(c) = self.entries.get(&key) {
+            return *c;
+        }
+        let Some(fonts) = &self.fonts else {
+            return Cached {
+                rect: None,
+                left: 0.0,
+                top: 0.0,
+            };
+        };
+        let font = fonts.face(face).clone();
+        let scale = Fonts::scale_of(&font, f32::from(size) / 4.0);
+        self.rasterize_glyph(atlas, key, &font, id, scale)
+    }
+    fn fallback_glyph(&mut self, atlas: &HudAtlas, id: ab_glyph::GlyphId, px: f32) -> Cached {
+        let size = (px * 4.0).round() as u16;
+        let key = Key::FallbackGlyph(id.0, size);
+        if let Some(c) = self.entries.get(&key) {
+            return *c;
+        }
+        let Some(font) = self.fonts.as_ref().and_then(|f| f.cjk.clone()) else {
+            return Cached {
+                rect: None,
+                left: 0.0,
+                top: 0.0,
+            };
+        };
+        let scale = Fonts::scale_of(&font, f32::from(size) / 4.0);
+        self.rasterize_glyph(atlas, key, &font, id, scale)
     }
     fn corner(&mut self, atlas: &HudAtlas, r: u16, ring: bool) -> Option<Rect> {
         let key = Key::Corner(r, ring);
@@ -607,6 +667,35 @@ impl<'a> Ui<'a> {
                         );
                     }
                     pen += g.advance * k;
+                    prev = None;
+                    continue;
+                }
+                if is_pack
+                    && let Some((cid, cjk_adv)) = c
+                        .fonts
+                        .as_ref()
+                        .and_then(|f| f.cjk.as_ref())
+                        .and_then(|cjk| {
+                            let cid = cjk.glyph_id(ch);
+                            (cid.0 != 0).then(|| {
+                                let cscale = Fonts::scale_of(cjk, px);
+                                (cid, cjk.as_scaled(cscale).h_advance(cid))
+                            })
+                        })
+                {
+                    if let Some(base) = baseline {
+                        let g = c.fallback_glyph(atlas, cid, px);
+                        if let Some(rect) = g.rect {
+                            emit(
+                                (pen + g.left).round(),
+                                base + g.top,
+                                rect.w as f32,
+                                rect.h as f32,
+                                rect,
+                            );
+                        }
+                    }
+                    pen += cjk_adv;
                     prev = None;
                     continue;
                 }
@@ -1228,6 +1317,33 @@ mod tests {
             (w * ui.density / ui.scale - icon.advance).abs() < 0.01,
             "{w}"
         );
+        reset_atlas();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn boot_atlas_renders_cjk_via_macos_system_fallback_font() {
+        reset_atlas();
+        assert!(
+            system_cjk_font().is_some(),
+            "macOS system CJK font must load"
+        );
+        let atlas = HudAtlas::boot();
+        let (w_cjk, quads_cjk) = drawn(&atlas, "导入游戏资源");
+        let (_, quads_tofu) = drawn(&atlas, "\u{ffff}\u{ffff}\u{ffff}\u{ffff}\u{ffff}\u{ffff}");
+        assert!(w_cjk > 40.0, "expected positive CJK width, got {w_cjk}");
+        assert_eq!(quads_cjk.len(), 6);
+        // Distinct CJK characters must produce distinct atlas UVs (not all identical .notdef boxes).
+        let unique_uvs: std::collections::HashSet<[u32; 2]> = quads_cjk
+            .iter()
+            .map(|(_, [u, v])| [u.to_bits(), v.to_bits()])
+            .collect();
+        assert_eq!(
+            unique_uvs.len(),
+            6,
+            "expected 6 distinct CJK glyphs, not .notdef tofu"
+        );
+        assert_ne!(quads_cjk[0].1, quads_tofu[0].1);
         reset_atlas();
     }
 }
