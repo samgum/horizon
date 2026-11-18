@@ -3,16 +3,16 @@ name: macos-offline-build
 # - Supports offline play out of the box + 1-click / drag-and-drop import of horizon-26.3-resources.zip
 # - Runs entirely on standard GitHub-hosted macOS runners (no self-hosted runner required)
 on:
-  push:
-    branches: [macos-offline]
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish a date-tagged GitHub Release with DMG and ZIP assets
+        description: Publish a date-tagged GitHub Release with DMG and ZIP assets (manual opt-in)
+        required: false
         type: boolean
-        default: true
+        default: false
       release_tag:
         description: Optional custom release tag (defaults to macos-YYYY.MM.DD)
+        required: false
         type: string
         default: ''
 
@@ -130,8 +130,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish GitHub Release
-        if: github.event_name != 'workflow_dispatch' || inputs.publish_release == true
+      - name: Publish GitHub Release (manual opt-in only)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
