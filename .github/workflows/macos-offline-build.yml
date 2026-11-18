@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: macos-offline-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   HORIZON_TELEMETRY_URL: "off"
@@ -135,12 +139,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > dist/RELEASE_NOTES.md <<EOF
-          ## Horizon macOS Offline Edition (${VERSION})
+          sed 's/^          //' > dist/RELEASE_NOTES.md <<'EOF'
+          ## Horizon macOS 独立离线版（中文说明）
 
-          - **原生双架构支持**：同时提供 Apple Silicon (\`arm64\`)、Intel (\`x64\`) 与双架构通用包 (\`universal\`)。
-          - **一键导入 \`horizon-26.3-resources.zip\` 即玩**：首次启动支持一键导入 \`Downloads/horizon-26.3-resources.zip\`、文件选择框或直接拖入窗口自动解压并启动。
-          - **免登录离线模式 + 微软正版双模式**：默认零门槛离线畅玩（主菜单左上角可随时自定义离线玩家名或切换微软设备码正版登录）。
+          ### 1. 安装包选择
+          - **`horizon-macos-arm64.dmg`**：适用于 **Apple Silicon（M1 / M2 / M3 / M4）** 芯片 Mac（推荐首选）。
+          - **`horizon-macos-x64.dmg`**：适用于 **Intel（英特尔 `x86_64`）** 芯片 Mac。
+          - **`horizon-macos-universal.dmg`**：双架构通用包（内含 `arm64` + `x86_64`，通吃所有 Mac）。
+          - 双击 `.dmg` 后将 `Horizon.app` 拖入右侧 `Applications`（应用程序）即可。
+
+          ### 2. 首次打开 Ad-hoc 自签名放行（必读）
+          本构建采用 macOS Ad-hoc 自签名，浏览器下载后首次打开若提示「未打开 Horizon / 无法验证开发者」，请任选一种方式放行一次：
+          - **系统设置放行（macOS 15+）**：双击一次弹窗点 **「完成」** → 打开 **「系统设置 → 隐私与安全性」** → 拉到底部点击 **「仍要打开 (Open Anyway)」** 并验证密码/Touch ID。
+          - **右键打开（macOS 12~14）**：在「应用程序」中按住 `Control` 右键点击 `Horizon.app` → 选择 **「打开」** → 在弹窗中再点 **「打开」**。
+          - **终端一键放行（最快）**：执行 `xattr -cr /Applications/Horizon.app` 后直接双击打开。
+
+          ### 3. 导入 `horizon-26.3-resources.zip` 与离线畅玩
+          - 首次打开若 `~/Downloads` 下有 `horizon-26.3-resources.zip`，直接点击 **「一键导入 Downloads/horizon-26.3-resources.zip」**（也可点击按钮选择 `.zip` 或直接把 `.zip` 拖进窗口），解压完成后自动进入离线游戏主菜单！
+          - 默认免登录离线模式（`Player`），点击主菜单左上角 **`● 离线: Player [账号]`** 胶囊可随时修改自定义离线玩家名或切换微软设备码正版登录。
+
+          ---
+
+          ## Horizon macOS Offline Edition (English)
+
+          ### 1. Which File to Download
+          - **`horizon-macos-arm64.dmg`**: Native build for **Apple Silicon (M1 / M2 / M3 / M4)** Macs (recommended).
+          - **`horizon-macos-x64.dmg`**: Native build for **Intel (`x86_64`)** Macs.
+          - **`horizon-macos-universal.dmg`**: Universal fat binary (`arm64` + `x86_64`) for all Macs.
+          - Open the `.dmg` and drag `Horizon.app` to `Applications`.
+
+          ### 2. First Launch (Ad-hoc Signature / Privacy & Security → Open Anyway)
+          Because this standalone build is ad-hoc signed without paid notarization, macOS Gatekeeper blocks the first launch of browser-downloaded apps. Approve it once via either method:
+          - **macOS 15+ (GUI)**: Double-click `Horizon.app` once and click **Done** → open **System Settings → Privacy & Security** → scroll to Security and click **Open Anyway**.
+          - **macOS 12–14 (GUI)**: Control-click (right-click) `Horizon.app` in Applications → **Open** → **Open**.
+          - **Terminal (Fastest)**: Run `xattr -cr /Applications/Horizon.app`, then open normally.
+
+          ### 3. Import `horizon-26.3-resources.zip` & Play Offline
+          - On first launch, click **`Import Downloads/horizon-26.3-resources.zip`**, pick any `.zip` via the file dialog, or drag & drop the `.zip` onto the window. Once extracted, Horizon boots straight into Offline Mode (`Player`).
+          - Click the top-left **`● Offline: Player [Account]`** pill on the Main Menu anytime to change your offline username or sign in with Microsoft (Device Code + macOS Keychain).
           EOF
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" --clobber \
