@@ -44,6 +44,6 @@
 		</dict>
 	</array>
 	<key>NSHumanReadableCopyright</key>
-	<string>Horizon is LGPL-3.0-or-later licensed. Not an official Minecraft product; not approved by or associated with Mojang or Microsoft.</string>
+	<string>Horizon is licensed under the GNU Lesser General Public License, version 3 or later. Not an official Minecraft product; not approved by or associated with Mojang or Microsoft.</string>
 </dict>
 </plist>
