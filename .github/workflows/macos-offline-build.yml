@@ -42,6 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: macos-offline-dual-arch
+          save-if: true
 
       - name: Compute build version
         id: meta

@@ -52,8 +52,9 @@ else
 fi
 codesign --verify --strict --verbose=2 "$app"
 
-# Verify only system libraries are linked.
-others=$(otool -L "$app/Contents/MacOS/horizon-client" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
+# Verify only system libraries are linked (dylib lines in `otool -L` are indented with a tab;
+# universal binaries print a second header line for the second slice).
+others=$(otool -L "$app/Contents/MacOS/horizon-client" | grep $'^\t' | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
 [[ -z "$others" ]] || { echo "unexpected non-system dylibs linked: $others" >&2; exit 1; }
 
 # Smoke-check --help startup.
